@@ -3,16 +3,29 @@ mod peer;
 mod vc;
 mod vcreg;
 
+use std::collections::HashMap;
+use std::env;
 use std::num::{NonZeroU32, NonZeroU8};
 
-use actix_web::web::{Data, Payload, Query};
+use actix_web::web::Payload;
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
+use gql_client::Client;
 use mediasoup::prelude::*;
 use peer::PeerConnection;
 use serde::Deserialize;
 use vc::VcId;
 use vcreg::VcRegistry;
+
+#[derive(Deserialize)]
+struct Data {
+    me: User,
+}
+
+#[derive(Deserialize)]
+struct User {
+    id: String,
+}
 
 fn media_codecs() -> Vec<RtpCodecCapability> {
     vec![
@@ -66,18 +79,46 @@ fn media_codecs() -> Vec<RtpCodecCapability> {
     ]
 }
 
-#[derive(Debug, Deserialize)]
-struct QueryParameters {
-    user: String,
-}
-
 async fn ws_index(
-    query_parameters: Query<QueryParameters>,
     request: HttpRequest,
-    worker_manager: Data<WorkerManager>,
-    vc_registry: Data<VcRegistry>,
+    worker_manager: actix_web::web::Data<WorkerManager>,
+    vc_registry: actix_web::web::Data<VcRegistry>,
     stream: Payload,
 ) -> Result<HttpResponse, Error> {
+    if request.cookies().is_err() {
+        return Ok(HttpResponse::Unauthorized().finish());
+    }
+
+    let mut session = String::from("");
+    for cookie in request.cookies().unwrap().iter() {
+        let (name, val) = cookie.name_value();
+        if name == "session" {
+            session = val.to_string()
+        }
+    }
+    if session == "" {
+        return Ok(HttpResponse::Unauthorized().finish());
+    }
+
+    let endpoint = env::var("RTWALK_API").expect("RTWALK_API must be set");
+    let query = r#"
+       query {
+           me {
+               id
+           }
+       }
+   "#;
+
+    let mut headers = HashMap::new();
+    headers.insert("Cookie", format!("session={}", session));
+
+    let client = Client::new_with_headers(endpoint, headers);
+    let data = client.query_unwrap::<Data>(query).await;
+
+    if data.is_err() {
+        return Ok(HttpResponse::Unauthorized().finish());
+    }
+
     let vc = vc_registry
         .get_or_create_vc(&worker_manager, VcId("dreamh".into()))
         .await;
@@ -91,7 +132,7 @@ async fn ws_index(
         }
     };
 
-    match PeerConnection::new(vc, &query_parameters.user).await {
+    match PeerConnection::new(vc, &data.unwrap().me.id).await {
         Ok(pc) => ws::start(pc, &request, stream),
         Err(error) => {
             eprintln!("{error}");
@@ -105,8 +146,8 @@ async fn ws_index(
 async fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let worker_manager = Data::new(WorkerManager::new());
-    let vc_registry = Data::new(VcRegistry::default());
+    let worker_manager = actix_web::web::Data::new(WorkerManager::new());
+    let vc_registry = actix_web::web::Data::new(VcRegistry::default());
     HttpServer::new(move || {
         App::new()
             .app_data(worker_manager.clone())
