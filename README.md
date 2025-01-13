@@ -1,4 +1,4 @@
-Discord VC equivalent setup for [RtWalk](https://github.com/) using mediasoup SFU. Except bots can play and video too.
+Discord VC equivalent setup for [RtWalk](https://github.com/) using mediasoup SFU. Except bots can play audio with video.
 
 DreamH frontend has the client protocol implementation.
 
